@@ -1,4 +1,4 @@
-name: Build and Deploy to CloudHub Sandbox
+name: Build and Deploy to CloudHub 2.0 Sandbox
 
 on:
   push:
@@ -65,13 +65,14 @@ jobs:
         with:
           name: mule-artifact
 
-      - name: Deploy to CloudHub Sandbox
+      # ✅ Updated CloudHub 2.0 Deployment Step
+      - name: Deploy to CloudHub 2.0 Sandbox
         env:
           ANYPOINT_USERNAME: ${{ secrets.ANYPOINT_PLATFORM_USERNAME }}
           ANYPOINT_PASSWORD: ${{ secrets.ANYPOINT_PLATFORM_PASSWORD }}
         run: |
           artifactName=$(ls *.jar | head -1)
-          echo "Deploying $artifactName to CloudHub Sandbox..."
-          mvn deploy -Pcloudhub-deploy -DmuleDeploy \
+          echo "Deploying $artifactName to CloudHub 2.0 Sandbox..."
+          mvn deploy -Pcloudhub2-deploy -DmuleDeploy \
             -Danypoint.username="$ANYPOINT_USERNAME" \
             -Danypoint.password="$ANYPOINT_PASSWORD"
