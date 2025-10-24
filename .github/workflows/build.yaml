@@ -66,12 +66,16 @@ jobs:
           name: mule-artifact
           path: target
 
-      - name: Deploy to CloudHub Sandbox
+      - name: Deploy to CloudHub 2.0 Sandbox
         env:
           ANYPOINT_USERNAME: ${{ secrets.ANYPOINT_PLATFORM_USERNAME }}
           ANYPOINT_PASSWORD: ${{ secrets.ANYPOINT_PLATFORM_PASSWORD }}
+          ENVIRONMENT: "Sandbox"
+          TARGET: "Cloudhub-US-East-2"
         run: |
           mvn deploy -Pcloudhub2-deploy -DmuleDeploy \
             -Danypoint.username="$ANYPOINT_USERNAME" \
             -Danypoint.password="$ANYPOINT_PASSWORD" \
+            -Denvironment="$ENVIRONMENT" \
+            -Dtarget="$TARGET" \
             -DskipTests
