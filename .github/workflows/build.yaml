@@ -64,15 +64,14 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: mule-artifact
+          path: target
 
-      # ✅ Updated CloudHub 2.0 Deployment Step
-      - name: Deploy to CloudHub 2.0 Sandbox
+      - name: Deploy to CloudHub Sandbox
         env:
           ANYPOINT_USERNAME: ${{ secrets.ANYPOINT_PLATFORM_USERNAME }}
           ANYPOINT_PASSWORD: ${{ secrets.ANYPOINT_PLATFORM_PASSWORD }}
         run: |
-          artifactName=$(ls *.jar | head -1)
-          echo "Deploying $artifactName to CloudHub 2.0 Sandbox..."
           mvn deploy -Pcloudhub2-deploy -DmuleDeploy \
             -Danypoint.username="$ANYPOINT_USERNAME" \
-            -Danypoint.password="$ANYPOINT_PASSWORD"
+            -Danypoint.password="$ANYPOINT_PASSWORD" \
+            -DskipTests
