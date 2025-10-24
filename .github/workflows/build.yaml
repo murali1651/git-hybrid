@@ -51,7 +51,7 @@ jobs:
         run: |
           npm install -g anypoint-cli-v4
 
-      - name: List Available Targets
+      - name: Check Available Commands
         env:
           ANYPOINT_USERNAME: ${{ secrets.ANYPOINT_PLATFORM_USERNAME }}
           ANYPOINT_PASSWORD: ${{ secrets.ANYPOINT_PLATFORM_PASSWORD }}
@@ -62,11 +62,17 @@ jobs:
           anypoint-cli-v4 conf organization "$ANYPOINT_ORG_ID"
           
           echo "=========================================="
-          echo "Available targets for SANDBOX environment:"
+          echo "Available Runtime Manager commands:"
           echo "=========================================="
-          anypoint-cli-v4 runtime-mgr target list --environment "SANDBOX"
+          anypoint-cli-v4 runtime-mgr --help
+          
+          echo ""
+          echo "=========================================="
+          echo "Checking for CloudHub 2.0 / Runtime Fabric targets:"
+          echo "=========================================="
+          anypoint-cli-v4 runtime-mgr rtf list --environment "SANDBOX" || echo "No RTF targets found"
 
-      - name: Deploy to CloudHub 2.0
+      - name: Deploy to CloudHub 2.0 via Runtime Fabric
         env:
           ANYPOINT_USERNAME: ${{ secrets.ANYPOINT_PLATFORM_USERNAME }}
           ANYPOINT_PASSWORD: ${{ secrets.ANYPOINT_PLATFORM_PASSWORD }}
@@ -75,20 +81,21 @@ jobs:
           JAR_FILE=$(ls *.jar | head -1)
           echo "=========================================="
           echo "Deploying: $JAR_FILE"
-          echo "Target: Cloudhub-US-East-2"
           echo "Environment: SANDBOX"
           echo "=========================================="
           
-          # Deploy to CloudHub 2.0
-          anypoint-cli-v4 runtime-mgr cloudhub2-application deploy \
-            --target "Cloudhub-US-East-2" \
+          # For CloudHub 2.0, we need to deploy as Runtime Fabric application
+          anypoint-cli-v4 runtime-mgr rtf-application deploy \
             --environment "SANDBOX" \
-            git-actions \
-            "$JAR_FILE" \
+            --target "Cloudhub-US-East-2" \
             --runtime-version 4.6.0 \
             --replicas 1 \
-            --cpu-reserved 0.1 \
-            --memory-reserved 0.5
+            --cpu-reserved "20m" \
+            --cpu-limit "1000m" \
+            --memory-reserved "700Mi" \
+            --memory-limit "700Mi" \
+            git-actions \
+            "$JAR_FILE"
           
           echo ""
           echo "=========================================="
@@ -107,4 +114,4 @@ jobs:
           echo "=========================================="
           echo "Application Status:"
           echo "=========================================="
-          anypoint-cli-v4 runtime-mgr cloudhub2-application describe git-actions --environment "SANDBOX"
+          anypoint-cli-v4 runtime-mgr rtf-application describe git-actions --environment "SANDBOX"
