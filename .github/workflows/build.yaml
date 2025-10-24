@@ -47,71 +47,152 @@ jobs:
         with:
           name: mule-artifact
 
-      - name: Install Anypoint CLI
-        run: |
-          npm install -g anypoint-cli-v4
-
-      - name: Check Available Commands
+      - name: Get Bearer Token
+        id: auth
         env:
           ANYPOINT_USERNAME: ${{ secrets.ANYPOINT_PLATFORM_USERNAME }}
           ANYPOINT_PASSWORD: ${{ secrets.ANYPOINT_PLATFORM_PASSWORD }}
-          ANYPOINT_ORG_ID: ${{ secrets.ANYPOINT_BUSINESS_GROUP_ID }}
         run: |
-          anypoint-cli-v4 conf username "$ANYPOINT_USERNAME"
-          anypoint-cli-v4 conf password "$ANYPOINT_PASSWORD"
-          anypoint-cli-v4 conf organization "$ANYPOINT_ORG_ID"
-          
-          echo "=========================================="
-          echo "Available Runtime Manager commands:"
-          echo "=========================================="
-          anypoint-cli-v4 runtime-mgr --help
-          
-          echo ""
-          echo "=========================================="
-          echo "Checking for CloudHub 2.0 / Runtime Fabric targets:"
-          echo "=========================================="
-          anypoint-cli-v4 runtime-mgr rtf list --environment "SANDBOX" || echo "No RTF targets found"
+          TOKEN=$(curl -s -X POST https://anypoint.mulesoft.com/accounts/login \
+            -H "Content-Type: application/json" \
+            -d "{\"username\":\"$ANYPOINT_USERNAME\",\"password\":\"$ANYPOINT_PASSWORD\"}" | jq -r '.access_token')
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> $GITHUB_OUTPUT
 
-      - name: Deploy to CloudHub 2.0 via Runtime Fabric
+      - name: Get Organization and Environment IDs
+        id: ids
         env:
-          ANYPOINT_USERNAME: ${{ secrets.ANYPOINT_PLATFORM_USERNAME }}
-          ANYPOINT_PASSWORD: ${{ secrets.ANYPOINT_PLATFORM_PASSWORD }}
-          ANYPOINT_ORG_ID: ${{ secrets.ANYPOINT_BUSINESS_GROUP_ID }}
+          TOKEN: ${{ steps.auth.outputs.token }}
+          ORG_ID: ${{ secrets.ANYPOINT_BUSINESS_GROUP_ID }}
+        run: |
+          echo "Getting environment ID for SANDBOX..."
+          ENV_ID=$(curl -s -X GET "https://anypoint.mulesoft.com/accounts/api/organizations/$ORG_ID/environments" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" | jq -r '.data[] | select(.name=="SANDBOX") | .id')
+          
+          echo "Organization ID: $ORG_ID"
+          echo "Environment ID: $ENV_ID"
+          echo "env_id=$ENV_ID" >> $GITHUB_OUTPUT
+
+      - name: Get Target ID
+        id: target
+        env:
+          TOKEN: ${{ steps.auth.outputs.token }}
+          ORG_ID: ${{ secrets.ANYPOINT_BUSINESS_GROUP_ID }}
+          ENV_ID: ${{ steps.ids.outputs.env_id }}
+        run: |
+          echo "Getting available targets..."
+          curl -s -X GET "https://anypoint.mulesoft.com/runtimefabric/api/organizations/$ORG_ID/environments/$ENV_ID/targets" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" | jq '.'
+          
+          TARGET_ID=$(curl -s -X GET "https://anypoint.mulesoft.com/runtimefabric/api/organizations/$ORG_ID/environments/$ENV_ID/targets" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" | jq -r '.[] | select(.name | contains("US-East") or contains("Ohio")) | .id' | head -1)
+          
+          echo "Target ID: $TARGET_ID"
+          echo "target_id=$TARGET_ID" >> $GITHUB_OUTPUT
+
+      - name: Deploy to CloudHub 2.0
+        env:
+          TOKEN: ${{ steps.auth.outputs.token }}
+          ORG_ID: ${{ secrets.ANYPOINT_BUSINESS_GROUP_ID }}
+          ENV_ID: ${{ steps.ids.outputs.env_id }}
+          TARGET_ID: ${{ steps.target.outputs.target_id }}
         run: |
           JAR_FILE=$(ls *.jar | head -1)
           echo "=========================================="
           echo "Deploying: $JAR_FILE"
-          echo "Environment: SANDBOX"
+          echo "Organization: $ORG_ID"
+          echo "Environment: $ENV_ID"
+          echo "Target: $TARGET_ID"
           echo "=========================================="
           
-          # For CloudHub 2.0, we need to deploy as Runtime Fabric application
-          anypoint-cli-v4 runtime-mgr rtf-application deploy \
-            --environment "SANDBOX" \
-            --target "Cloudhub-US-East-2" \
-            --runtime-version 4.6.0 \
-            --replicas 1 \
-            --cpu-reserved "20m" \
-            --cpu-limit "1000m" \
-            --memory-reserved "700Mi" \
-            --memory-limit "700Mi" \
-            git-actions \
-            "$JAR_FILE"
+          # Create deployment payload
+          cat > deployment.json <<EOF
+          {
+            "name": "git-actions",
+            "target": {
+              "provider": "MC",
+              "targetId": "$TARGET_ID",
+              "deploymentSettings": {
+                "resources": {
+                  "cpu": {
+                    "reserved": "100m",
+                    "limit": "1000m"
+                  },
+                  "memory": {
+                    "reserved": "700Mi",
+                    "limit": "700Mi"
+                  }
+                },
+                "http": {
+                  "inbound": {
+                    "publicUrl": "git-actions.usa-e2.cloudhub.io"
+                  }
+                },
+                "clustered": false,
+                "updateStrategy": "rolling",
+                "forwardSslSession": false,
+                "disableAmLogForwarding": false,
+                "generateDefaultPublicUrl": true,
+                "persistentObjectStore": false,
+                "anypoint": {
+                  "muleVersion": "4.6.0"
+                }
+              },
+              "replicas": 1
+            },
+            "application": {
+              "desiredState": "STARTED",
+              "configuration": {
+                "mule.agent.application.properties.service": {}
+              },
+              "vCores": "0.1",
+              "integrations": {
+                "services": {}
+              }
+            }
+          }
+          EOF
           
-          echo ""
-          echo "=========================================="
-          echo "Deployment completed!"
-          echo "=========================================="
+          # Upload JAR and deploy
+          RESPONSE=$(curl -s -X POST \
+            "https://anypoint.mulesoft.com/cloudhub/api/v2/applications" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "X-ANYPNT-ENV-ID: $ENV_ID" \
+            -H "X-ANYPNT-ORG-ID: $ORG_ID" \
+            -F "file=@$JAR_FILE" \
+            -F "appInfoJson=@deployment.json")
+          
+          echo "$RESPONSE" | jq '.'
+          
+          if echo "$RESPONSE" | jq -e '.id' > /dev/null; then
+            echo "=========================================="
+            echo "Deployment initiated successfully!"
+            echo "=========================================="
+          else
+            echo "=========================================="
+            echo "Deployment failed!"
+            echo "=========================================="
+            exit 1
+          fi
 
-      - name: Verify Deployment
+      - name: Check Deployment Status
         env:
-          ANYPOINT_USERNAME: ${{ secrets.ANYPOINT_PLATFORM_USERNAME }}
-          ANYPOINT_PASSWORD: ${{ secrets.ANYPOINT_PLATFORM_PASSWORD }}
-          ANYPOINT_ORG_ID: ${{ secrets.ANYPOINT_BUSINESS_GROUP_ID }}
+          TOKEN: ${{ steps.auth.outputs.token }}
+          ORG_ID: ${{ secrets.ANYPOINT_BUSINESS_GROUP_ID }}
+          ENV_ID: ${{ steps.ids.outputs.env_id }}
         run: |
-          echo "Waiting 15 seconds for deployment to register..."
-          sleep 15
+          echo "Waiting 30 seconds for deployment to start..."
+          sleep 30
           
           echo "=========================================="
-          echo "Application Status:"
+          echo "Checking deployment status..."
           echo "=========================================="
-          anypoint-cli-v4 runtime-mgr rtf-application describe git-actions --environment "SANDBOX"
+          
+          curl -s -X GET \
+            "https://anypoint.mulesoft.com/cloudhub/api/v2/applications/git-actions" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "X-ANYPNT-ENV-ID: $ENV_ID" \
+            -H "X-ANYPNT-ORG-ID: $ORG_ID" | jq '.'
