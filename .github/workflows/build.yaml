@@ -64,7 +64,13 @@ jobs:
           echo "=========================================="
           echo "Available targets for Sandbox environment:"
           echo "=========================================="
-          anypoint-cli-v4 runtime-mgr target list --environment "Sandbox" || echo "Failed to list targets. Check environment name."
+          anypoint-cli-v4 runtime-mgr target list --environment "Sandbox" || echo "Failed to list targets. Trying without environment filter..."
+          
+          echo ""
+          echo "=========================================="
+          echo "All available targets:"
+          echo "=========================================="
+          anypoint-cli-v4 runtime-mgr target list
 
   deploy:
     needs: build
@@ -76,9 +82,37 @@ jobs:
         with:
           name: mule-artifact
 
+      - name: List Downloaded Files
+        run: |
+          echo "Files in current directory:"
+          ls -la
+
       - name: Install Anypoint CLI
         run: |
           npm install -g anypoint-cli-v4
+
+      - name: Configure Anypoint CLI
+        env:
+          ANYPOINT_USERNAME: ${{ secrets.ANYPOINT_PLATFORM_USERNAME }}
+          ANYPOINT_PASSWORD: ${{ secrets.ANYPOINT_PLATFORM_PASSWORD }}
+          ANYPOINT_ORG_ID: ${{ secrets.ANYPOINT_BUSINESS_GROUP_ID }}
+        run: |
+          anypoint-cli-v4 conf username "$ANYPOINT_USERNAME"
+          anypoint-cli-v4 conf password "$ANYPOINT_PASSWORD"
+          anypoint-cli-v4 conf organization "$ANYPOINT_ORG_ID"
+          
+          echo "CLI configured successfully"
+
+      - name: Check Existing Applications
+        env:
+          ANYPOINT_USERNAME: ${{ secrets.ANYPOINT_PLATFORM_USERNAME }}
+          ANYPOINT_PASSWORD: ${{ secrets.ANYPOINT_PLATFORM_PASSWORD }}
+          ANYPOINT_ORG_ID: ${{ secrets.ANYPOINT_BUSINESS_GROUP_ID }}
+        run: |
+          echo "=========================================="
+          echo "Checking for existing applications:"
+          echo "=========================================="
+          anypoint-cli-v4 runtime-mgr cloudhub2-application list --environment "Sandbox" || echo "No applications found or failed to list"
 
       - name: Deploy to CloudHub 2.0
         env:
@@ -88,12 +122,9 @@ jobs:
         run: |
           # Get the JAR file name
           JAR_FILE=$(ls *.jar | head -1)
+          echo "=========================================="
           echo "Deploying: $JAR_FILE"
-          
-          # Login to Anypoint Platform
-          anypoint-cli-v4 conf username "$ANYPOINT_USERNAME"
-          anypoint-cli-v4 conf password "$ANYPOINT_PASSWORD"
-          anypoint-cli-v4 conf organization "$ANYPOINT_ORG_ID"
+          echo "=========================================="
           
           # Deploy to CloudHub 2.0
           anypoint-cli-v4 runtime-mgr cloudhub2-application deploy \
@@ -105,3 +136,20 @@ jobs:
             --replicas 1 \
             --cpu-reserved 0.1 \
             --memory-reserved 0.5
+          
+          echo ""
+          echo "=========================================="
+          echo "Deployment command completed"
+          echo "=========================================="
+
+      - name: Verify Deployment
+        env:
+          ANYPOINT_USERNAME: ${{ secrets.ANYPOINT_PLATFORM_USERNAME }}
+          ANYPOINT_PASSWORD: ${{ secrets.ANYPOINT_PLATFORM_PASSWORD }}
+          ANYPOINT_ORG_ID: ${{ secrets.ANYPOINT_BUSINESS_GROUP_ID }}
+        run: |
+          echo "=========================================="
+          echo "Verifying deployment - checking application status:"
+          echo "=========================================="
+          sleep 10
+          anypoint-cli-v4 runtime-mgr cloudhub2-application describe git-actions --environment "Sandbox" || echo "Application not found or failed to describe"
