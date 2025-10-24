@@ -7,7 +7,7 @@ on:
     branches: [ main ]
 
 jobs:
-  build-and-deploy:
+  build:
     runs-on: ubuntu-latest
 
     steps:
@@ -28,37 +28,80 @@ jobs:
           distribution: 'zulu'
           java-version: 8
 
-      - name: Configure Maven settings.xml
-        run: |
-          mkdir -p ~/.m2
-          cat > ~/.m2/settings.xml <<EOF
-          <settings>
-            <servers>
-              <server>
-                <id>anypoint-exchange</id>
-                <username>${ANYPOINT_USERNAME}</username>
-                <password>${ANYPOINT_PASSWORD}</password>
-              </server>
-            </servers>
-          </settings>
-          EOF
-        env:
-          ANYPOINT_USERNAME: ${{ secrets.ANYPOINT_PLATFORM_USERNAME }}
-          ANYPOINT_PASSWORD: ${{ secrets.ANYPOINT_PLATFORM_PASSWORD }}
+      - name: Build Mule Application
+        run: mvn -B clean package --file pom.xml
 
-      - name: Build and Deploy to CloudHub 2.0
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mule-artifact
+          path: target/*.jar
+
+  discover-targets:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install Anypoint CLI
+        run: |
+          npm install -g anypoint-cli-v4
+
+      - name: List Available Targets
         env:
           ANYPOINT_USERNAME: ${{ secrets.ANYPOINT_PLATFORM_USERNAME }}
           ANYPOINT_PASSWORD: ${{ secrets.ANYPOINT_PLATFORM_PASSWORD }}
-          BUSINESS_GROUP_ID: ${{ secrets.ANYPOINT_BUSINESS_GROUP_ID }}
+          ANYPOINT_ORG_ID: ${{ secrets.ANYPOINT_BUSINESS_GROUP_ID }}
         run: |
-          mvn clean deploy -Pcloudhub2-deploy -DmuleDeploy \
-            -Danypoint.username="$ANYPOINT_USERNAME" \
-            -Danypoint.password="$ANYPOINT_PASSWORD" \
-            -Denvironment="Sandbox" \
-            -Dtarget="Cloudhub-US-East-2" \
-            -Dapplication.name="git-actions" \
-            -Dreplicas=1 \
-            -Dvcores=0.1 \
-            -Dbusiness.group.id="$BUSINESS_GROUP_ID" \
-            -DskipTests
+          anypoint-cli-v4 conf username "$ANYPOINT_USERNAME"
+          anypoint-cli-v4 conf password "$ANYPOINT_PASSWORD"
+          anypoint-cli-v4 conf organization "$ANYPOINT_ORG_ID"
+          
+          echo "=========================================="
+          echo "Available environments:"
+          echo "=========================================="
+          anypoint-cli-v4 runtime-mgr environment list
+          
+          echo ""
+          echo "=========================================="
+          echo "Available targets for Sandbox environment:"
+          echo "=========================================="
+          anypoint-cli-v4 runtime-mgr target list --environment "Sandbox" || echo "Failed to list targets. Check environment name."
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download Built Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: mule-artifact
+
+      - name: Install Anypoint CLI
+        run: |
+          npm install -g anypoint-cli-v4
+
+      - name: Deploy to CloudHub 2.0
+        env:
+          ANYPOINT_USERNAME: ${{ secrets.ANYPOINT_PLATFORM_USERNAME }}
+          ANYPOINT_PASSWORD: ${{ secrets.ANYPOINT_PLATFORM_PASSWORD }}
+          ANYPOINT_ORG_ID: ${{ secrets.ANYPOINT_BUSINESS_GROUP_ID }}
+        run: |
+          # Get the JAR file name
+          JAR_FILE=$(ls *.jar | head -1)
+          echo "Deploying: $JAR_FILE"
+          
+          # Login to Anypoint Platform
+          anypoint-cli-v4 conf username "$ANYPOINT_USERNAME"
+          anypoint-cli-v4 conf password "$ANYPOINT_PASSWORD"
+          anypoint-cli-v4 conf organization "$ANYPOINT_ORG_ID"
+          
+          # Deploy to CloudHub 2.0
+          anypoint-cli-v4 runtime-mgr cloudhub2-application deploy \
+            --target "Cloudhub-US-East-2" \
+            --environment "Sandbox" \
+            git-actions \
+            "$JAR_FILE" \
+            --runtime-version 4.6.0 \
+            --replicas 1 \
+            --cpu-reserved 0.1 \
+            --memory-reserved 0.5
