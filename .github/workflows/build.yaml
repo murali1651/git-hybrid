@@ -59,20 +59,73 @@ jobs:
           echo "::add-mask::$TOKEN"
           echo "token=$TOKEN" >> $GITHUB_OUTPUT
 
-      - name: Get Organization and Environment IDs
+      - name: List All Environments
+        env:
+          TOKEN: ${{ steps.auth.outputs.token }}
+          ORG_ID: ${{ secrets.ANYPOINT_BUSINESS_GROUP_ID }}
+        run: |
+          echo "=========================================="
+          echo "All available environments:"
+          echo "=========================================="
+          curl -s -X GET "https://anypoint.mulesoft.com/accounts/api/organizations/$ORG_ID/environments" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" | jq '.'
+
+      - name: Get Environment ID
         id: ids
         env:
           TOKEN: ${{ steps.auth.outputs.token }}
           ORG_ID: ${{ secrets.ANYPOINT_BUSINESS_GROUP_ID }}
         run: |
           echo "Getting environment ID for SANDBOX..."
-          ENV_ID=$(curl -s -X GET "https://anypoint.mulesoft.com/accounts/api/organizations/$ORG_ID/environments" \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Content-Type: application/json" | jq -r '.data[] | select(.name=="SANDBOX") | .id')
           
-          echo "Organization ID: $ORG_ID"
-          echo "Environment ID: $ENV_ID"
+          # Get all environments and search for SANDBOX (case-insensitive)
+          ENV_RESPONSE=$(curl -s -X GET "https://anypoint.mulesoft.com/accounts/api/organizations/$ORG_ID/environments" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json")
+          
+          echo "Environment Response:"
+          echo "$ENV_RESPONSE" | jq '.'
+          
+          # Try exact match first
+          ENV_ID=$(echo "$ENV_RESPONSE" | jq -r '.data[]? | select(.name=="SANDBOX") | .id')
+          
+          # If not found, try case-insensitive
+          if [ -z "$ENV_ID" ]; then
+            ENV_ID=$(echo "$ENV_RESPONSE" | jq -r '.data[]? | select(.name | ascii_upcase == "SANDBOX") | .id')
+          fi
+          
+          # If still not found, try Production (common default)
+          if [ -z "$ENV_ID" ]; then
+            echo "SANDBOX not found, checking for Production or Sandbox (different case)..."
+            ENV_ID=$(echo "$ENV_RESPONSE" | jq -r '.data[]? | select(.name=="Production" or .name=="Sandbox") | .id' | head -1)
+          fi
+          
+          if [ -z "$ENV_ID" ]; then
+            echo "ERROR: Could not find environment!"
+            echo "Available environments:"
+            echo "$ENV_RESPONSE" | jq -r '.data[]? | .name'
+            exit 1
+          fi
+          
+          echo "Found Environment ID: $ENV_ID"
           echo "env_id=$ENV_ID" >> $GITHUB_OUTPUT
+
+      - name: List Available Targets
+        env:
+          TOKEN: ${{ steps.auth.outputs.token }}
+          ORG_ID: ${{ secrets.ANYPOINT_BUSINESS_GROUP_ID }}
+          ENV_ID: ${{ steps.ids.outputs.env_id }}
+        run: |
+          echo "=========================================="
+          echo "Getting CloudHub 2.0 targets for environment: $ENV_ID"
+          echo "=========================================="
+          
+          # Try the CloudHub 2.0 API endpoint
+          curl -s -X GET "https://anypoint.mulesoft.com/cloudhub/api/v2/targets" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "X-ANYPNT-ENV-ID: $ENV_ID" \
+            -H "X-ANYPNT-ORG-ID: $ORG_ID" | jq '.'
 
       - name: Get Target ID
         id: target
@@ -81,16 +134,25 @@ jobs:
           ORG_ID: ${{ secrets.ANYPOINT_BUSINESS_GROUP_ID }}
           ENV_ID: ${{ steps.ids.outputs.env_id }}
         run: |
-          echo "Getting available targets..."
-          curl -s -X GET "https://anypoint.mulesoft.com/runtimefabric/api/organizations/$ORG_ID/environments/$ENV_ID/targets" \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Content-Type: application/json" | jq '.'
+          echo "Getting target ID..."
           
-          TARGET_ID=$(curl -s -X GET "https://anypoint.mulesoft.com/runtimefabric/api/organizations/$ORG_ID/environments/$ENV_ID/targets" \
+          TARGET_RESPONSE=$(curl -s -X GET "https://anypoint.mulesoft.com/cloudhub/api/v2/targets" \
             -H "Authorization: Bearer $TOKEN" \
-            -H "Content-Type: application/json" | jq -r '.[] | select(.name | contains("US-East") or contains("Ohio")) | .id' | head -1)
+            -H "X-ANYPNT-ENV-ID: $ENV_ID" \
+            -H "X-ANYPNT-ORG-ID: $ORG_ID")
           
-          echo "Target ID: $TARGET_ID"
+          echo "Targets Response:"
+          echo "$TARGET_RESPONSE" | jq '.'
+          
+          # Get first available target (or filter by name containing Ohio/US-East)
+          TARGET_ID=$(echo "$TARGET_RESPONSE" | jq -r '.[0].id // .id // empty')
+          
+          if [ -z "$TARGET_ID" ]; then
+            echo "ERROR: No targets found!"
+            exit 1
+          fi
+          
+          echo "Using Target ID: $TARGET_ID"
           echo "target_id=$TARGET_ID" >> $GITHUB_OUTPUT
 
       - name: Deploy to CloudHub 2.0
@@ -108,13 +170,14 @@ jobs:
           echo "Target: $TARGET_ID"
           echo "=========================================="
           
-          # Create deployment payload
+          # Create deployment configuration
           cat > deployment.json <<EOF
           {
             "name": "git-actions",
             "target": {
               "provider": "MC",
               "targetId": "$TARGET_ID",
+              "replicas": 1,
               "deploymentSettings": {
                 "resources": {
                   "cpu": {
@@ -131,33 +194,30 @@ jobs:
                     "publicUrl": "git-actions.usa-e2.cloudhub.io"
                   }
                 },
+                "generateDefaultPublicUrl": true,
                 "clustered": false,
                 "updateStrategy": "rolling",
                 "forwardSslSession": false,
                 "disableAmLogForwarding": false,
-                "generateDefaultPublicUrl": true,
                 "persistentObjectStore": false,
                 "anypoint": {
                   "muleVersion": "4.6.0"
                 }
-              },
-              "replicas": 1
+              }
             },
             "application": {
               "desiredState": "STARTED",
-              "configuration": {
-                "mule.agent.application.properties.service": {}
-              },
-              "vCores": "0.1",
-              "integrations": {
-                "services": {}
-              }
+              "configuration": {},
+              "vCores": "0.1"
             }
           }
           EOF
           
-          # Upload JAR and deploy
-          RESPONSE=$(curl -s -X POST \
+          echo "Deployment configuration:"
+          cat deployment.json | jq '.'
+          
+          # Deploy application
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
             "https://anypoint.mulesoft.com/cloudhub/api/v2/applications" \
             -H "Authorization: Bearer $TOKEN" \
             -H "X-ANYPNT-ENV-ID: $ENV_ID" \
@@ -165,15 +225,20 @@ jobs:
             -F "file=@$JAR_FILE" \
             -F "appInfoJson=@deployment.json")
           
-          echo "$RESPONSE" | jq '.'
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          BODY=$(echo "$RESPONSE" | sed '$d')
           
-          if echo "$RESPONSE" | jq -e '.id' > /dev/null; then
+          echo "HTTP Status: $HTTP_CODE"
+          echo "Response:"
+          echo "$BODY" | jq '.' || echo "$BODY"
+          
+          if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
             echo "=========================================="
             echo "Deployment initiated successfully!"
             echo "=========================================="
           else
             echo "=========================================="
-            echo "Deployment failed!"
+            echo "Deployment failed with status: $HTTP_CODE"
             echo "=========================================="
             exit 1
           fi
@@ -184,15 +249,15 @@ jobs:
           ORG_ID: ${{ secrets.ANYPOINT_BUSINESS_GROUP_ID }}
           ENV_ID: ${{ steps.ids.outputs.env_id }}
         run: |
-          echo "Waiting 30 seconds for deployment to start..."
-          sleep 30
+          echo "Waiting 20 seconds for deployment to process..."
+          sleep 20
           
           echo "=========================================="
-          echo "Checking deployment status..."
+          echo "Application status:"
           echo "=========================================="
           
           curl -s -X GET \
             "https://anypoint.mulesoft.com/cloudhub/api/v2/applications/git-actions" \
             -H "Authorization: Bearer $TOKEN" \
             -H "X-ANYPNT-ENV-ID: $ENV_ID" \
-            -H "X-ANYPNT-ORG-ID: $ORG_ID" | jq '.'
+            -H "X-ANYPNT-ORG-ID: $ORG_ID" | jq '.' || echo "Application not found yet"
