@@ -53,113 +53,115 @@ jobs:
           ANYPOINT_USERNAME: ${{ secrets.ANYPOINT_PLATFORM_USERNAME }}
           ANYPOINT_PASSWORD: ${{ secrets.ANYPOINT_PLATFORM_PASSWORD }}
         run: |
+          echo "Getting authentication token..."
           TOKEN=$(curl -s -X POST https://anypoint.mulesoft.com/accounts/login \
             -H "Content-Type: application/json" \
             -d "{\"username\":\"$ANYPOINT_USERNAME\",\"password\":\"$ANYPOINT_PASSWORD\"}" | jq -r '.access_token')
+          
+          if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
+            echo "Failed to get authentication token"
+            exit 1
+          fi
+          
+          echo "✅ Authentication successful"
           echo "::add-mask::$TOKEN"
           echo "token=$TOKEN" >> $GITHUB_OUTPUT
 
       - name: Get Environment ID
-        id: ids
+        id: env
         env:
           TOKEN: ${{ steps.auth.outputs.token }}
           ORG_ID: ${{ secrets.ANYPOINT_BUSINESS_GROUP_ID }}
         run: |
-          echo "Getting environment ID for SANDBOX..."
-          
+          echo "Getting environment ID..."
           ENV_RESPONSE=$(curl -s -X GET "https://anypoint.mulesoft.com/accounts/api/organizations/$ORG_ID/environments" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json")
           
-          ENV_ID=$(echo "$ENV_RESPONSE" | jq -r '.data[]? | select(.name=="SANDBOX") | .id')
+          ENV_ID=$(echo "$ENV_RESPONSE" | jq -r '.data[] | select(.name=="SANDBOX") | .id')
           
           if [ -z "$ENV_ID" ]; then
-            ENV_ID=$(echo "$ENV_RESPONSE" | jq -r '.data[]? | select(.name | ascii_upcase == "SANDBOX") | .id')
-          fi
-          
-          if [ -z "$ENV_ID" ]; then
-            echo "ERROR: SANDBOX environment not found!"
-            echo "Available environments:"
-            echo "$ENV_RESPONSE" | jq -r '.data[]? | .name'
+            echo "SANDBOX environment not found. Available environments:"
+            echo "$ENV_RESPONSE" | jq -r '.data[] | .name'
             exit 1
           fi
           
-          echo "Found Environment ID: $ENV_ID"
+          echo "✅ Found environment: SANDBOX ($ENV_ID)"
           echo "env_id=$ENV_ID" >> $GITHUB_OUTPUT
 
-      - name: List CloudHub 2.0 Targets (Runtime Fabric)
+      - name: Get CloudHub 2.0 Shared Space Info
+        id: space
         env:
           TOKEN: ${{ steps.auth.outputs.token }}
           ORG_ID: ${{ secrets.ANYPOINT_BUSINESS_GROUP_ID }}
-          ENV_ID: ${{ steps.ids.outputs.env_id }}
+          ENV_ID: ${{ steps.env.outputs.env_id }}
         run: |
-          echo "=========================================="
-          echo "Getting CloudHub 2.0 targets (Runtime Fabric)..."
-          echo "=========================================="
+          echo "Getting CloudHub 2.0 shared spaces..."
           
-          # CloudHub 2.0 uses Runtime Fabric API
-          curl -s -X GET "https://anypoint.mulesoft.com/runtimefabric/api/organizations/$ORG_ID/environments/$ENV_ID/targets" \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Content-Type: application/json" | jq '.'
-
-      - name: Get Target ID
-        id: target
-        env:
-          TOKEN: ${{ steps.auth.outputs.token }}
-          ORG_ID: ${{ secrets.ANYPOINT_BUSINESS_GROUP_ID }}
-          ENV_ID: ${{ steps.ids.outputs.env_id }}
-        run: |
-          echo "Getting CloudHub 2.0 target..."
-          
-          TARGET_RESPONSE=$(curl -s -X GET "https://anypoint.mulesoft.com/runtimefabric/api/organizations/$ORG_ID/environments/$ENV_ID/targets" \
+          # Get shared spaces (CloudHub 2.0 managed cloud)
+          SPACES_RESPONSE=$(curl -s -X GET \
+            "https://anypoint.mulesoft.com/runtimefabric/api/organizations/$ORG_ID/sharedspaces" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json")
           
-          echo "Targets Response:"
-          echo "$TARGET_RESPONSE" | jq '.'
+          echo "Shared Spaces Response:"
+          echo "$SPACES_RESPONSE" | jq '.'
           
-          # Get the first CloudHub 2.0 target (provider: MC)
-          TARGET_ID=$(echo "$TARGET_RESPONSE" | jq -r '.[] | select(.provider=="MC") | .id' | head -1)
+          # Get the US East (Ohio) shared space
+          SPACE_ID=$(echo "$SPACES_RESPONSE" | jq -r '.[] | select(.region | contains("us-east-2") or contains("ohio") or contains("Ohio")) | .id' | head -1)
           
-          if [ -z "$TARGET_ID" ]; then
-            echo "ERROR: No CloudHub 2.0 targets found!"
-            echo "Make sure you have a CloudHub 2.0 private space created in Runtime Manager"
+          if [ -z "$SPACE_ID" ]; then
+            echo "Trying alternative approach - getting all spaces..."
+            SPACE_ID=$(echo "$SPACES_RESPONSE" | jq -r '.[0].id')
+          fi
+          
+          if [ -z "$SPACE_ID" ]; then
+            echo "❌ No CloudHub 2.0 shared space found"
             exit 1
           fi
           
-          TARGET_NAME=$(echo "$TARGET_RESPONSE" | jq -r ".[] | select(.id==\"$TARGET_ID\") | .name")
-          
-          echo "Using Target: $TARGET_NAME (ID: $TARGET_ID)"
-          echo "target_id=$TARGET_ID" >> $GITHUB_OUTPUT
-          echo "target_name=$TARGET_NAME" >> $GITHUB_OUTPUT
+          SPACE_NAME=$(echo "$SPACES_RESPONSE" | jq -r ".[] | select(.id==\"$SPACE_ID\") | .name")
+          echo "✅ Using Shared Space: $SPACE_NAME ($SPACE_ID)"
+          echo "space_id=$SPACE_ID" >> $GITHUB_OUTPUT
 
       - name: Deploy to CloudHub 2.0
         env:
           TOKEN: ${{ steps.auth.outputs.token }}
           ORG_ID: ${{ secrets.ANYPOINT_BUSINESS_GROUP_ID }}
-          ENV_ID: ${{ steps.ids.outputs.env_id }}
-          TARGET_ID: ${{ steps.target.outputs.target_id }}
+          ENV_ID: ${{ steps.env.outputs.env_id }}
+          SPACE_ID: ${{ steps.space.outputs.space_id }}
         run: |
           JAR_FILE=$(ls *.jar | head -1)
+          APP_NAME="git-actions"
+          
           echo "=========================================="
-          echo "Deploying: $JAR_FILE"
-          echo "Organization: $ORG_ID"
-          echo "Environment: $ENV_ID (SANDBOX)"
-          echo "Target: $TARGET_ID"
+          echo "📦 Deploying Application"
+          echo "=========================================="
+          echo "File: $JAR_FILE"
+          echo "Name: $APP_NAME"
+          echo "Space: $SPACE_ID"
+          echo "Environment: $ENV_ID"
           echo "=========================================="
           
-          # CloudHub 2.0 deployment payload
+          # Create deployment configuration
           cat > deployment.json <<EOF
           {
-            "name": "git-actions",
+            "name": "$APP_NAME",
             "target": {
               "provider": "MC",
-              "targetId": "$TARGET_ID",
-              "replicas": 1,
+              "targetId": "$SPACE_ID",
               "deploymentSettings": {
+                "clustered": false,
+                "enforceDeployingReplicasAcrossNodes": false,
+                "http": {
+                  "inbound": {
+                    "publicUrl": "$APP_NAME.usa-e2.cloudhub.io"
+                  }
+                },
+                "jvm": {},
                 "resources": {
                   "cpu": {
-                    "reserved": "100m",
+                    "reserved": "20m",
                     "limit": "1000m"
                   },
                   "memory": {
@@ -167,83 +169,94 @@ jobs:
                     "limit": "700Mi"
                   }
                 },
-                "http": {
-                  "inbound": {
-                    "publicUrl": ""
-                  }
-                },
-                "generateDefaultPublicUrl": true,
-                "clustered": false,
                 "updateStrategy": "rolling",
+                "lastMileSecurity": false,
                 "forwardSslSession": false,
+                "generateDefaultPublicUrl": true,
                 "disableAmLogForwarding": false,
                 "persistentObjectStore": false,
                 "anypoint": {
-                  "muleVersion": "4.6.0"
+                  "muleVersion": "4.6.0",
+                  "workerType": "MICRO"
                 }
-              }
+              },
+              "replicas": 1
             },
             "application": {
               "desiredState": "STARTED",
               "configuration": {
                 "mule.agent.application.properties.service": {}
-              }
+              },
+              "integrations": {
+                "services": {
+                  "objectStoreV2": {
+                    "enabled": false
+                  }
+                }
+              },
+              "vCores": "0.1"
             }
           }
           EOF
           
-          echo "Deployment configuration:"
+          echo ""
+          echo "Deployment Configuration:"
           cat deployment.json | jq '.'
+          echo ""
           
-          # Deploy using Runtime Fabric / CloudHub 2.0 API
-          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+          # Upload and deploy
+          echo "Uploading application..."
+          RESPONSE=$(curl -s -w "\nHTTP_CODE:%{http_code}" -X POST \
             "https://anypoint.mulesoft.com/amc/application-manager/api/v2/organizations/$ORG_ID/environments/$ENV_ID/deployments" \
             -H "Authorization: Bearer $TOKEN" \
-            -H "Content-Type: multipart/form-data" \
+            -H "X-ANYPNT-ENV-ID: $ENV_ID" \
+            -H "X-ANYPNT-ORG-ID: $ORG_ID" \
             -F "file=@$JAR_FILE" \
             -F "appInfoJson=@deployment.json;type=application/json")
           
-          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
-          BODY=$(echo "$RESPONSE" | sed '$d')
+          HTTP_CODE=$(echo "$RESPONSE" | grep "HTTP_CODE:" | cut -d: -f2)
+          BODY=$(echo "$RESPONSE" | sed '/HTTP_CODE:/d')
           
           echo ""
-          echo "HTTP Status: $HTTP_CODE"
-          echo "Response:"
+          echo "Response (HTTP $HTTP_CODE):"
           echo "$BODY" | jq '.' 2>/dev/null || echo "$BODY"
+          echo ""
           
           if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "202" ]; then
-            echo ""
             echo "=========================================="
             echo "✅ Deployment initiated successfully!"
             echo "=========================================="
           else
-            echo ""
             echo "=========================================="
-            echo "❌ Deployment failed with status: $HTTP_CODE"
+            echo "❌ Deployment failed with HTTP $HTTP_CODE"
             echo "=========================================="
             exit 1
           fi
 
-      - name: Monitor Deployment
+      - name: Monitor Deployment Status
         env:
           TOKEN: ${{ steps.auth.outputs.token }}
           ORG_ID: ${{ secrets.ANYPOINT_BUSINESS_GROUP_ID }}
-          ENV_ID: ${{ steps.ids.outputs.env_id }}
+          ENV_ID: ${{ steps.env.outputs.env_id }}
         run: |
-          echo "Waiting for deployment to process..."
+          echo "⏳ Waiting 30 seconds for deployment to process..."
           sleep 30
-          
-          echo "=========================================="
-          echo "Checking deployment status..."
-          echo "=========================================="
-          
-          # Check deployment status
-          curl -s -X GET \
-            "https://anypoint.mulesoft.com/amc/application-manager/api/v2/organizations/$ORG_ID/environments/$ENV_ID/deployments" \
-            -H "Authorization: Bearer $TOKEN" | jq '.items[] | select(.name=="git-actions")'
           
           echo ""
           echo "=========================================="
-          echo "✅ Deployment check complete!"
-          echo "Check Runtime Manager for full status"
+          echo "📊 Checking Deployment Status"
+          echo "=========================================="
+          
+          STATUS=$(curl -s -X GET \
+            "https://anypoint.mulesoft.com/amc/application-manager/api/v2/organizations/$ORG_ID/environments/$ENV_ID/deployments" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "X-ANYPNT-ENV-ID: $ENV_ID" \
+            -H "X-ANYPNT-ORG-ID: $ORG_ID")
+          
+          echo "$STATUS" | jq '.items[] | select(.name=="git-actions") | {name: .name, status: .status, desiredState: .application.desiredState, replicas: .target.replicas}'
+          
+          echo ""
+          echo "=========================================="
+          echo "✅ Check Runtime Manager for full details"
+          echo "URL: https://anypoint.mulesoft.com/cloudhub"
           echo "=========================================="
