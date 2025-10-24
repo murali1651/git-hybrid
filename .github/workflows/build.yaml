@@ -78,15 +78,15 @@ jobs:
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json")
           
-          ENV_ID=$(echo "$ENV_RESPONSE" | jq -r '.data[] | select(.name=="SANDBOX") | .id')
+          ENV_ID=$(echo "$ENV_RESPONSE" | jq -r '.data[] | select(.name=="Sandbox") | .id')
           
           if [ -z "$ENV_ID" ]; then
-            echo "SANDBOX environment not found. Available environments:"
+            echo "Sandbox environment not found. Available environments:"
             echo "$ENV_RESPONSE" | jq -r '.data[] | .name'
             exit 1
           fi
           
-          echo "✅ Found environment: SANDBOX ($ENV_ID)"
+          echo "✅ Found environment: Sandbox ($ENV_ID)"
           echo "env_id=$ENV_ID" >> $GITHUB_OUTPUT
 
       - name: Get CloudHub 2.0 Shared Space Info
