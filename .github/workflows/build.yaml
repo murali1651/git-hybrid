@@ -60,6 +60,12 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-maven-
 
+      - name: Set up JDK 1.8
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: 8
+
       - name: Download Built Artifact
         uses: actions/download-artifact@v4
         with:
@@ -70,12 +76,13 @@ jobs:
         env:
           ANYPOINT_USERNAME: ${{ secrets.ANYPOINT_PLATFORM_USERNAME }}
           ANYPOINT_PASSWORD: ${{ secrets.ANYPOINT_PLATFORM_PASSWORD }}
-          ENVIRONMENT: "Sandbox"
-          TARGET: "Cloudhub-US-East-2"
         run: |
-          mvn deploy -Pcloudhub2-deploy -DmuleDeploy \
+          mvn clean install deploy -Pcloudhub2-deploy -DmuleDeploy \
             -Danypoint.username="$ANYPOINT_USERNAME" \
             -Danypoint.password="$ANYPOINT_PASSWORD" \
-            -Denvironment="$ENVIRONMENT" \
-            -Dtarget="$TARGET" \
+            -Denvironment="Sandbox" \
+            -Dtarget="Cloudhub-US-East-2" \
+            -Dapplication.name="git-actions" \
+            -Dreplicas=1 \
+            -Dvcores=0.1 \
             -DskipTests

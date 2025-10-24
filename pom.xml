@@ -77,7 +77,6 @@
 </pluginRepository>
 </pluginRepositories>
 
-<!-- CloudHub 2.0 Deployment Profile -->
 <profiles>
 <profile>
 <id>cloudhub2-deploy</id>
@@ -96,10 +95,18 @@
 <muleVersion>${app.runtime}</muleVersion>
 <username>${anypoint.username}</username>
 <password>${anypoint.password}</password>
-<applicationName>git-actions</applicationName>
-<replicas>1</replicas>
-<vCores>0.1</vCores>
+<applicationName>${application.name}</applicationName>
+<replicas>${replicas}</replicas>
+<vCores>${vcores}</vCores>
 <deploymentTimeout>1000000</deploymentTimeout>
+<skipDeploymentVerification>false</skipDeploymentVerification>
+<deploymentSettings>
+<http>
+<inbound>
+<publicUrl>${application.name}.${target}.cloudhub.io</publicUrl>
+</inbound>
+</http>
+</deploymentSettings>
 </cloudhub2Deployment>
 </configuration>
 </plugin>
