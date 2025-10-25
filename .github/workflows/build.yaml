@@ -89,39 +89,61 @@ jobs:
           echo "✅ Found environment: Sandbox ($ENV_ID)"
           echo "env_id=$ENV_ID" >> $GITHUB_OUTPUT
 
-      - name: Get CloudHub 2.0 Shared Space Info
+      - name: Get CloudHub 2.0 Private Spaces
         id: space
         env:
           TOKEN: ${{ steps.auth.outputs.token }}
           ORG_ID: ${{ secrets.ANYPOINT_BUSINESS_GROUP_ID }}
           ENV_ID: ${{ steps.env.outputs.env_id }}
         run: |
-          echo "Getting CloudHub 2.0 shared spaces..."
+          echo "=========================================="
+          echo "Getting CloudHub 2.0 Private Spaces..."
+          echo "=========================================="
           
-          # Get shared spaces (CloudHub 2.0 managed cloud)
+          # Try multiple API endpoints to find private spaces
+          echo "Trying privatespaces API..."
           SPACES_RESPONSE=$(curl -s -X GET \
-            "https://anypoint.mulesoft.com/runtimefabric/api/organizations/$ORG_ID/sharedspaces" \
+            "https://anypoint.mulesoft.com/runtimefabric/api/organizations/$ORG_ID/privatespaces" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json")
           
-          echo "Shared Spaces Response:"
+          echo "Response:"
           echo "$SPACES_RESPONSE" | jq '.'
           
-          # Get the US East (Ohio) shared space
-          SPACE_ID=$(echo "$SPACES_RESPONSE" | jq -r '.[] | select(.region | contains("us-east-2") or contains("ohio") or contains("Ohio")) | .id' | head -1)
+          # Extract space ID
+          SPACE_ID=$(echo "$SPACES_RESPONSE" | jq -r '.[0].id // empty')
           
           if [ -z "$SPACE_ID" ]; then
-            echo "Trying alternative approach - getting all spaces..."
-            SPACE_ID=$(echo "$SPACES_RESPONSE" | jq -r '.[0].id')
+            echo ""
+            echo "Trying fabrics API..."
+            SPACES_RESPONSE=$(curl -s -X GET \
+              "https://anypoint.mulesoft.com/runtimefabric/api/organizations/$ORG_ID/fabrics" \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Content-Type: application/json")
+            
+            echo "Response:"
+            echo "$SPACES_RESPONSE" | jq '.'
+            
+            SPACE_ID=$(echo "$SPACES_RESPONSE" | jq -r '.[0].id // empty')
           fi
           
           if [ -z "$SPACE_ID" ]; then
-            echo "❌ No CloudHub 2.0 shared space found"
+            echo ""
+            echo "❌ No CloudHub 2.0 private spaces found!"
+            echo ""
+            echo "Please create a CloudHub 2.0 Private Space:"
+            echo "1. Go to Runtime Manager"
+            echo "2. Click 'CloudHub 2.0' in the left menu"
+            echo "3. Click 'Create Private Space'"
+            echo "4. Select US East (Ohio) region"
             exit 1
           fi
           
-          SPACE_NAME=$(echo "$SPACES_RESPONSE" | jq -r ".[] | select(.id==\"$SPACE_ID\") | .name")
-          echo "✅ Using Shared Space: $SPACE_NAME ($SPACE_ID)"
+          SPACE_NAME=$(echo "$SPACES_RESPONSE" | jq -r ".[0].name // \"default\"")
+          echo ""
+          echo "✅ Found Private Space: $SPACE_NAME"
+          echo "   Space ID: $SPACE_ID"
+          echo ""
           echo "space_id=$SPACE_ID" >> $GITHUB_OUTPUT
 
       - name: Deploy to CloudHub 2.0
@@ -139,11 +161,11 @@ jobs:
           echo "=========================================="
           echo "File: $JAR_FILE"
           echo "Name: $APP_NAME"
-          echo "Space: $SPACE_ID"
+          echo "Private Space: $SPACE_ID"
           echo "Environment: $ENV_ID"
           echo "=========================================="
           
-          # Create deployment configuration
+          # Create deployment configuration for CloudHub 2.0
           cat > deployment.json <<EOF
           {
             "name": "$APP_NAME",
@@ -155,7 +177,7 @@ jobs:
                 "enforceDeployingReplicasAcrossNodes": false,
                 "http": {
                   "inbound": {
-                    "publicUrl": "$APP_NAME.usa-e2.cloudhub.io"
+                    "publicUrl": ""
                   }
                 },
                 "jvm": {},
@@ -176,8 +198,7 @@ jobs:
                 "disableAmLogForwarding": false,
                 "persistentObjectStore": false,
                 "anypoint": {
-                  "muleVersion": "4.6.0",
-                  "workerType": "MICRO"
+                  "muleVersion": "4.6.0"
                 }
               },
               "replicas": 1
@@ -193,8 +214,7 @@ jobs:
                     "enabled": false
                   }
                 }
-              },
-              "vCores": "0.1"
+              }
             }
           }
           EOF
@@ -205,7 +225,7 @@ jobs:
           echo ""
           
           # Upload and deploy
-          echo "Uploading application..."
+          echo "Uploading application to CloudHub 2.0..."
           RESPONSE=$(curl -s -w "\nHTTP_CODE:%{http_code}" -X POST \
             "https://anypoint.mulesoft.com/amc/application-manager/api/v2/organizations/$ORG_ID/environments/$ENV_ID/deployments" \
             -H "Authorization: Bearer $TOKEN" \
@@ -239,7 +259,7 @@ jobs:
           ORG_ID: ${{ secrets.ANYPOINT_BUSINESS_GROUP_ID }}
           ENV_ID: ${{ steps.env.outputs.env_id }}
         run: |
-          echo "⏳ Waiting 30 seconds for deployment to process..."
+          echo "⏳ Waiting 30 seconds for deployment to initialize..."
           sleep 30
           
           echo ""
@@ -253,10 +273,12 @@ jobs:
             -H "X-ANYPNT-ENV-ID: $ENV_ID" \
             -H "X-ANYPNT-ORG-ID: $ORG_ID")
           
-          echo "$STATUS" | jq '.items[] | select(.name=="git-actions") | {name: .name, status: .status, desiredState: .application.desiredState, replicas: .target.replicas}'
+          echo "$STATUS" | jq '.items[] | select(.name=="git-actions")'
           
           echo ""
           echo "=========================================="
-          echo "✅ Check Runtime Manager for full details"
-          echo "URL: https://anypoint.mulesoft.com/cloudhub"
+          echo "✅ Deployment process complete!"
+          echo ""
+          echo "Check your application in Runtime Manager:"
+          echo "https://anypoint.mulesoft.com/cloudhub/"
           echo "=========================================="
