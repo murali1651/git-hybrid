@@ -89,64 +89,60 @@ jobs:
           echo "✅ Found environment: Sandbox ($ENV_ID)"
           echo "env_id=$ENV_ID" >> $GITHUB_OUTPUT
 
-      - name: Get CloudHub 2.0 Private Spaces
+      - name: Get CloudHub 2.0 Shared Spaces
         id: space
         env:
           TOKEN: ${{ steps.auth.outputs.token }}
           ORG_ID: ${{ secrets.ANYPOINT_BUSINESS_GROUP_ID }}
-          ENV_ID: ${{ steps.env.outputs.env_id }}
         run: |
           echo "=========================================="
-          echo "Getting CloudHub 2.0 Private Spaces..."
+          echo "Getting CloudHub 2.0 Shared Spaces..."
           echo "=========================================="
           
-          # Try multiple API endpoints to find private spaces
-          echo "Trying privatespaces API..."
+          # Get public/shared CloudHub 2.0 spaces
           SPACES_RESPONSE=$(curl -s -X GET \
-            "https://anypoint.mulesoft.com/runtimefabric/api/organizations/$ORG_ID/privatespaces" \
+            "https://anypoint.mulesoft.com/runtimefabric/api/organizations/$ORG_ID/publicspaces" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json")
           
-          echo "Response:"
+          echo "Available Shared Spaces:"
           echo "$SPACES_RESPONSE" | jq '.'
           
-          # Extract space ID
-          SPACE_ID=$(echo "$SPACES_RESPONSE" | jq -r '.[0].id // empty')
+          # Get US East (Ohio) shared space
+          SPACE_ID=$(echo "$SPACES_RESPONSE" | jq -r '.content[]? | select(.region=="us-east-2") | .id' | head -1)
           
-          if [ -z "$SPACE_ID" ]; then
-            echo ""
-            echo "Trying fabrics API..."
-            SPACES_RESPONSE=$(curl -s -X GET \
-              "https://anypoint.mulesoft.com/runtimefabric/api/organizations/$ORG_ID/fabrics" \
-              -H "Authorization: Bearer $TOKEN" \
-              -H "Content-Type: application/json")
-            
-            echo "Response:"
-            echo "$SPACES_RESPONSE" | jq '.'
-            
-            SPACE_ID=$(echo "$SPACES_RESPONSE" | jq -r '.[0].id // empty')
+          # If not found by region code, try by name
+          if [ -z "$SPACE_ID" ] || [ "$SPACE_ID" = "null" ]; then
+            SPACE_ID=$(echo "$SPACES_RESPONSE" | jq -r '.content[]? | select(.name | contains("Ohio") or contains("us-east-2")) | .id' | head -1)
           fi
           
-          if [ -z "$SPACE_ID" ]; then
+          # If still not found, get the first available space
+          if [ -z "$SPACE_ID" ] || [ "$SPACE_ID" = "null" ]; then
+            echo "Specific region not found, using first available shared space..."
+            SPACE_ID=$(echo "$SPACES_RESPONSE" | jq -r '.content[0].id // empty')
+          fi
+          
+          if [ -z "$SPACE_ID" ] || [ "$SPACE_ID" = "null" ]; then
             echo ""
-            echo "❌ No CloudHub 2.0 private spaces found!"
+            echo "❌ No CloudHub 2.0 shared spaces found!"
             echo ""
-            echo "Please create a CloudHub 2.0 Private Space:"
-            echo "1. Go to Runtime Manager"
-            echo "2. Click 'CloudHub 2.0' in the left menu"
-            echo "3. Click 'Create Private Space'"
-            echo "4. Select US East (Ohio) region"
+            echo "Your organization may not have access to CloudHub 2.0 Shared Cloud."
+            echo "Please contact MuleSoft support to enable CloudHub 2.0."
             exit 1
           fi
           
-          SPACE_NAME=$(echo "$SPACES_RESPONSE" | jq -r ".[0].name // \"default\"")
+          SPACE_NAME=$(echo "$SPACES_RESPONSE" | jq -r ".content[] | select(.id==\"$SPACE_ID\") | .name")
+          SPACE_REGION=$(echo "$SPACES_RESPONSE" | jq -r ".content[] | select(.id==\"$SPACE_ID\") | .region")
+          
           echo ""
-          echo "✅ Found Private Space: $SPACE_NAME"
+          echo "✅ Using Shared Space: $SPACE_NAME"
           echo "   Space ID: $SPACE_ID"
+          echo "   Region: $SPACE_REGION"
           echo ""
+          
           echo "space_id=$SPACE_ID" >> $GITHUB_OUTPUT
 
-      - name: Deploy to CloudHub 2.0
+      - name: Deploy to CloudHub 2.0 Shared Cloud
         env:
           TOKEN: ${{ steps.auth.outputs.token }}
           ORG_ID: ${{ secrets.ANYPOINT_BUSINESS_GROUP_ID }}
@@ -157,15 +153,15 @@ jobs:
           APP_NAME="git-actions"
           
           echo "=========================================="
-          echo "📦 Deploying Application"
+          echo "📦 Deploying to CloudHub 2.0 Shared Cloud"
           echo "=========================================="
           echo "File: $JAR_FILE"
           echo "Name: $APP_NAME"
-          echo "Private Space: $SPACE_ID"
+          echo "Shared Space: $SPACE_ID"
           echo "Environment: $ENV_ID"
           echo "=========================================="
           
-          # Create deployment configuration for CloudHub 2.0
+          # Create deployment configuration
           cat > deployment.json <<EOF
           {
             "name": "$APP_NAME",
@@ -224,8 +220,8 @@ jobs:
           cat deployment.json | jq '.'
           echo ""
           
-          # Upload and deploy
-          echo "Uploading application to CloudHub 2.0..."
+          # Deploy application
+          echo "Uploading application..."
           RESPONSE=$(curl -s -w "\nHTTP_CODE:%{http_code}" -X POST \
             "https://anypoint.mulesoft.com/amc/application-manager/api/v2/organizations/$ORG_ID/environments/$ENV_ID/deployments" \
             -H "Authorization: Bearer $TOKEN" \
@@ -238,7 +234,9 @@ jobs:
           BODY=$(echo "$RESPONSE" | sed '/HTTP_CODE:/d')
           
           echo ""
+          echo "=========================================="
           echo "Response (HTTP $HTTP_CODE):"
+          echo "=========================================="
           echo "$BODY" | jq '.' 2>/dev/null || echo "$BODY"
           echo ""
           
@@ -273,12 +271,18 @@ jobs:
             -H "X-ANYPNT-ENV-ID: $ENV_ID" \
             -H "X-ANYPNT-ORG-ID: $ORG_ID")
           
-          echo "$STATUS" | jq '.items[] | select(.name=="git-actions")'
+          echo "$STATUS" | jq '.items[] | select(.name=="git-actions") | {
+            name: .name,
+            status: .status,
+            desiredState: .application.desiredState,
+            replicas: .target.replicas,
+            publicUrl: .target.deploymentSettings.http.inbound.publicUrl
+          }'
           
           echo ""
           echo "=========================================="
-          echo "✅ Deployment process complete!"
+          echo "✅ Deployment complete!"
           echo ""
-          echo "Check your application in Runtime Manager:"
+          echo "View your application in Runtime Manager:"
           echo "https://anypoint.mulesoft.com/cloudhub/"
           echo "=========================================="
