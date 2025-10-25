@@ -28,15 +28,56 @@ jobs:
           distribution: 'zulu'
           java-version: 8
 
-      - name: Build and Deploy to CloudHub 2.0 Shared Space
+      - name: Get Authentication Token and Find Target
+        id: discover
+        env:
+          ANYPOINT_USERNAME: ${{ secrets.ANYPOINT_PLATFORM_USERNAME }}
+          ANYPOINT_PASSWORD: ${{ secrets.ANYPOINT_PLATFORM_PASSWORD }}
+          ORG_ID: ${{ secrets.ANYPOINT_BUSINESS_GROUP_ID }}
+        run: |
+          echo "Getting authentication token..."
+          TOKEN=$(curl -s -X POST https://anypoint.mulesoft.com/accounts/login \
+            -H "Content-Type: application/json" \
+            -d "{\"username\":\"$ANYPOINT_USERNAME\",\"password\":\"$ANYPOINT_PASSWORD\"}" | jq -r '.access_token')
+          
+          echo "Getting environment ID..."
+          ENV_ID=$(curl -s -X GET "https://anypoint.mulesoft.com/accounts/api/organizations/$ORG_ID/environments" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" | jq -r '.data[] | select(.name=="Sandbox") | .id')
+          
+          echo "Environment ID: $ENV_ID"
+          
+          echo "Getting available targets..."
+          TARGETS=$(curl -s -X GET \
+            "https://anypoint.mulesoft.com/runtimefabric/api/organizations/$ORG_ID/environments/$ENV_ID/targets" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json")
+          
+          echo "Available targets:"
+          echo "$TARGETS" | jq '.'
+          
+          # Try to find the Shared Space target
+          TARGET_NAME=$(echo "$TARGETS" | jq -r '.[0].name // empty')
+          
+          if [ -z "$TARGET_NAME" ]; then
+            echo "No targets found! Response was:"
+            echo "$TARGETS"
+            exit 1
+          fi
+          
+          echo "Using target: $TARGET_NAME"
+          echo "target_name=$TARGET_NAME" >> $GITHUB_OUTPUT
+
+      - name: Build and Deploy to CloudHub 2.0
         env:
           ANYPOINT_USERNAME: ${{ secrets.ANYPOINT_PLATFORM_USERNAME }}
           ANYPOINT_PASSWORD: ${{ secrets.ANYPOINT_PLATFORM_PASSWORD }}
           BUSINESS_GROUP_ID: ${{ secrets.ANYPOINT_BUSINESS_GROUP_ID }}
+          TARGET_NAME: ${{ steps.discover.outputs.target_name }}
         run: |
           echo "=========================================="
           echo "Building and Deploying to CloudHub 2.0"
-          echo "Target: Shared Space - US East (Ohio)"
+          echo "Target: $TARGET_NAME"
           echo "Environment: Sandbox"
           echo "=========================================="
           
@@ -44,7 +85,7 @@ jobs:
             -Danypoint.username="$ANYPOINT_USERNAME" \
             -Danypoint.password="$ANYPOINT_PASSWORD" \
             -Denvironment="Sandbox" \
-            -Dtarget="Shared Space" \
+            -Dtarget="$TARGET_NAME" \
             -Dapplication.name="git-actions" \
             -Dbusiness.group.id="$BUSINESS_GROUP_ID" \
             -DskipTests
